@@ -135,7 +135,7 @@ public abstract class NetworkParameters implements Serializable {
     /**
      * The maximum number of coins to be generated
      */
-    public static final long MAX_COINS = 21000000;
+    public static final long MAX_COINS = 92233720368L;
 
     /**
      * The maximum money to be generated
