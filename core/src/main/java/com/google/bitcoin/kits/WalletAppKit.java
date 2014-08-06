@@ -233,8 +233,8 @@ public class WalletAppKit extends AbstractIdleService {
     protected void startUp() throws Exception {
         // Runs in a separate thread.
         if (!directory.exists()) {
-            if (!directory.mkdir()) {
-                throw new IOException("Could not create named directory.");
+            if (!directory.mkdirs()) {
+                throw new IOException("Could not create directory " + directory.getAbsolutePath());
             }
         }
         log.info("Starting up with directory = {}", directory);
@@ -378,7 +378,9 @@ public class WalletAppKit extends AbstractIdleService {
 
     protected PeerGroup createPeerGroup() throws TimeoutException {
         if (useTor) {
-            return PeerGroup.newWithTor(params, vChain, new TorClient());
+            TorClient torClient = new TorClient();
+            torClient.getConfig().setDataDirectory(directory);
+            return PeerGroup.newWithTor(params, vChain, torClient);
         }
         else
             return new PeerGroup(params, vChain);

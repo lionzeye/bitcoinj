@@ -20,6 +20,7 @@ import com.google.bitcoin.core.Coin;
 import com.google.bitcoin.core.Sha256Hash;
 import com.google.bitcoin.net.ProtobufParser;
 
+import com.google.protobuf.ByteString;
 import org.bitcoin.paymentchannel.Protos;
 
 import javax.annotation.Nullable;
@@ -69,8 +70,11 @@ public abstract class ServerConnectionEventHandler {
      *
      * @param by The increase in total payment
      * @param to The new total payment to us (not including fees which may be required to claim the payment)
+     * @param info Information about this payment increase, used to extend this protocol.
+     * @return acknowledgment information to be sent to the client.
      */
-    public abstract void paymentIncrease(Coin by, Coin to);
+    @Nullable
+    public abstract ByteString paymentIncrease(Coin by, Coin to, ByteString info);
 
     /**
      * <p>Called when the channel was closed for some reason. May be called without a call to

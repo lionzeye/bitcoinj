@@ -145,7 +145,12 @@ public class Transaction extends ChildMessage implements Serializable {
         USER_PAYMENT,
         /** Transaction automatically created and broadcast in order to reallocate money from old to new keys. */
         KEY_ROTATION,
-
+        /** Transaction that uses up pledges to an assurance contract */
+        ASSURANCE_CONTRACT_CLAIM,
+        /** Transaction that makes a pledge to an assurance contract. */
+        ASSURANCE_CONTRACT_PLEDGE,
+        /** Send-to-self transaction that exists just to create an output of the right size we can pledge. */
+        ASSURANCE_CONTRACT_STUB
         // In future: de/refragmentation, privacy boosting/mixing, child-pays-for-parent fees, etc.
     }
 
@@ -1188,6 +1193,26 @@ public class Transaction extends ChildMessage implements Serializable {
     public List<TransactionOutput> getOutputs() {
         maybeParse();
         return Collections.unmodifiableList(outputs);
+    }
+
+    /**
+     * <p>Returns the list of transacion outputs, whether spent or unspent, that match a wallet by address or that are
+     * watched by a wallet, i.e., transaction outputs whose script's address is controlled by the wallet and transaction
+     * outputs whose script is watched by the wallet.</p>
+     *
+     * @param wallet The wallet that controls addresses and watches scripts.
+     * @return linked list of outputs relevant to the wallet in this transaction
+     */
+    public List<TransactionOutput> getWalletOutputs(Wallet wallet){
+        maybeParse();
+        List<TransactionOutput> walletOutputs = new LinkedList<TransactionOutput>();
+        Coin v = Coin.ZERO;
+        for (TransactionOutput o : outputs) {
+            if (!o.isMineOrWatched(wallet)) continue;
+            walletOutputs.add(o);
+        }
+
+        return walletOutputs;
     }
 
     /** Randomly re-orders the transaction outputs: good for privacy */

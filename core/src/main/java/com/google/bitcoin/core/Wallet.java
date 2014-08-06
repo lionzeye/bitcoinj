@@ -215,10 +215,18 @@ public class Wallet extends BaseTaggableObject implements Serializable, BlockCha
         return new Wallet(params, new KeyChainGroup(params, seed));
     }
 
+    /**
+     * Creates a wallet that tracks payments to and from the HD key hierarchy rooted by the given watching key. A
+     * watching key corresponds to account zero in the recommended BIP32 key hierarchy.
+     */
     public static Wallet fromWatchingKey(NetworkParameters params, DeterministicKey watchKey, long creationTimeSeconds) {
         return new Wallet(params, new KeyChainGroup(params, watchKey, creationTimeSeconds));
     }
 
+    /**
+     * Creates a wallet that tracks payments to and from the HD key hierarchy rooted by the given watching key. A
+     * watching key corresponds to account zero in the recommended BIP32 key hierarchy.
+     */
     public static Wallet fromWatchingKey(NetworkParameters params, DeterministicKey watchKey) {
         return new Wallet(params, new KeyChainGroup(params, watchKey));
     }
@@ -611,7 +619,8 @@ public class Wallet extends BaseTaggableObject implements Serializable, BlockCha
     /**
      * Returns a public-only DeterministicKey that can be used to set up a watching wallet: that is, a wallet that
      * can import transactions from the block chain just as the normal wallet can, but which cannot spend. Watching
-     * wallets are very useful for things like web servers that accept payments.
+     * wallets are very useful for things like web servers that accept payments. This key corresponds to the account
+     * zero key in the recommended BIP32 hierarchy.
      */
     public DeterministicKey getWatchingKey() {
         lock.lock();
@@ -2035,7 +2044,7 @@ public class Wallet extends BaseTaggableObject implements Serializable, BlockCha
         }
     }
 
-    private void maybeQueueOnWalletChanged() {
+    protected void maybeQueueOnWalletChanged() {
         // Don't invoke the callback in some circumstances, eg, whilst we are re-organizing or fiddling with
         // transactions due to a new block arriving. It will be called later instead.
         checkState(lock.isHeldByCurrentThread());
@@ -2051,7 +2060,7 @@ public class Wallet extends BaseTaggableObject implements Serializable, BlockCha
         }
     }
 
-    private void queueOnCoinsReceived(final Transaction tx, final Coin balance, final Coin newBalance) {
+    protected void queueOnCoinsReceived(final Transaction tx, final Coin balance, final Coin newBalance) {
         checkState(lock.isHeldByCurrentThread());
         for (final ListenerRegistration<WalletEventListener> registration : eventListeners) {
             registration.executor.execute(new Runnable() {
@@ -2063,7 +2072,7 @@ public class Wallet extends BaseTaggableObject implements Serializable, BlockCha
         }
     }
 
-    private void queueOnCoinsSent(final Transaction tx, final Coin prevBalance, final Coin newBalance) {
+    protected void queueOnCoinsSent(final Transaction tx, final Coin prevBalance, final Coin newBalance) {
         checkState(lock.isHeldByCurrentThread());
         for (final ListenerRegistration<WalletEventListener> registration : eventListeners) {
             registration.executor.execute(new Runnable() {
@@ -2075,7 +2084,7 @@ public class Wallet extends BaseTaggableObject implements Serializable, BlockCha
         }
     }
 
-    private void queueOnReorganize() {
+    protected void queueOnReorganize() {
         checkState(lock.isHeldByCurrentThread());
         checkState(insideReorg);
         for (final ListenerRegistration<WalletEventListener> registration : eventListeners) {
@@ -2088,7 +2097,7 @@ public class Wallet extends BaseTaggableObject implements Serializable, BlockCha
         }
     }
 
-    private void queueOnScriptsAdded(final List<Script> scripts) {
+    protected void queueOnScriptsAdded(final List<Script> scripts) {
         checkState(lock.isHeldByCurrentThread());
         for (final ListenerRegistration<WalletEventListener> registration : eventListeners) {
             registration.executor.execute(new Runnable() {
@@ -2276,7 +2285,7 @@ public class Wallet extends BaseTaggableObject implements Serializable, BlockCha
      * {@link #addWatchedScripts(java.util.List)}.
      * @param excludeImmatureCoinbases Whether to ignore outputs that are unspendable due to being immature.
      */
-    public LinkedList<TransactionOutput> getWatchedOutputs(boolean excludeImmatureCoinbases) {
+    public List<TransactionOutput> getWatchedOutputs(boolean excludeImmatureCoinbases) {
         lock.lock();
         try {
             LinkedList<TransactionOutput> candidates = Lists.newLinkedList();
@@ -2723,7 +2732,7 @@ public class Wallet extends BaseTaggableObject implements Serializable, BlockCha
         lock.lock();
         try {
             checkNotNull(selector);
-            LinkedList<TransactionOutput> candidates = getWatchedOutputs(true);
+            List<TransactionOutput> candidates = getWatchedOutputs(true);
             CoinSelection selection = selector.select(NetworkParameters.MAX_MONEY, candidates);
             return selection.valueGathered;
         } finally {

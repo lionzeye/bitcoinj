@@ -500,12 +500,12 @@ public class Utils {
     // 00000001, 00000010, 00000100, 00001000, ...
     private static final int bitMask[] = {0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80};
     
-    // Checks if the given bit is set in data
+    /** Checks if the given bit is set in data, using little endian (not the same as Java native big endian) */
     public static boolean checkBitLE(byte[] data, int index) {
         return (data[index >>> 3] & bitMask[7 & index]) != 0;
     }
     
-    // Sets the given bit in data to one
+    /** Sets the given bit in data to one, using little endian (not the same as Java native big endian) */
     public static void setBitLE(byte[] data, int index) {
         data[index >>> 3] |= bitMask[7 & index];
     }
@@ -546,6 +546,11 @@ public class Utils {
         if (mockSleepQueue != null) {
             mockSleepQueue.offer(true);
         }
+    }
+
+    public static boolean isAndroidRuntime() {
+        final String runtime = System.getProperty("java.runtime.name");
+        return runtime != null && runtime.equals("Android Runtime");
     }
 
     private static class Pair implements Comparable<Pair> {

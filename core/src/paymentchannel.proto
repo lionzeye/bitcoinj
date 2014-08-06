@@ -83,6 +83,7 @@ message TwoWayChannelMessage {
     optional ReturnRefund return_refund = 6;
     optional ProvideContract provide_contract = 7;
     optional UpdatePayment update_payment = 8;
+    optional PaymentAck payment_ack = 11;
     optional Settlement settlement = 9;
 
     optional Error error = 10;
@@ -209,6 +210,15 @@ message UpdatePayment {
     // the primary's refund output and thus the secondary is free to do what they wish with their
     // part of the multisig output.
     required bytes signature = 2;
+    // Information about this update. Used to extend this protocol.
+    optional bytes info =  3;
+
+}
+
+// This message is sent as an acknowledgement of an UpdatePayment message
+message PaymentAck {
+    // Information about this update. Used to extend this protocol
+    optional bytes info = 1;
 }
 
 message Settlement {
