@@ -102,7 +102,7 @@ import static com.google.common.base.Preconditions.*;
  * {@link Wallet#autosaveToFile(java.io.File, long, java.util.concurrent.TimeUnit, com.google.bitcoin.wallet.WalletFiles.Listener)}
  * for more information about this.</p>
  */
-public class Wallet extends BaseTaggableObject implements Serializable, BlockChainListener, PeerFilterProvider, KeyBag {
+public class Wallet extends BaseTaggableObject implements Serializable, BlockChainListener, PeerFilterProvider, KeyBag, TransactionBag {
     private static final Logger log = LoggerFactory.getLogger(Wallet.class);
     private static final long serialVersionUID = 2L;
     private static final int MINIMUM_BLOOM_DATA_LENGTH = 8;
@@ -832,11 +832,13 @@ public class Wallet extends BaseTaggableObject implements Serializable, BlockCha
     /**
      * Returns true if this wallet contains a public key which hashes to the given hash.
      */
+    @Override
     public boolean isPubKeyHashMine(byte[] pubkeyHash) {
         return findKeyFromPubHash(pubkeyHash) != null;
     }
 
     /** Returns true if this wallet is watching transactions for outputs with the script. */
+    @Override
     public boolean isWatchedScript(Script script) {
         lock.lock();
         try {
@@ -864,6 +866,7 @@ public class Wallet extends BaseTaggableObject implements Serializable, BlockCha
     /**
      * Returns true if this wallet contains a keypair with the given public key.
      */
+    @Override
     public boolean isPubKeyMine(byte[] pubkey) {
         return findKeyFromPubKey(pubkey) != null;
     }
@@ -886,6 +889,7 @@ public class Wallet extends BaseTaggableObject implements Serializable, BlockCha
     /**
      * Returns true if this wallet knows the script corresponding to the given hash
      */
+    @Override
     public boolean isPayToScriptHashMine(byte[] payToScriptHash) {
         return findRedeemDataFromScriptHash(payToScriptHash) != null;
     }
@@ -2357,6 +2361,30 @@ public class Wallet extends BaseTaggableObject implements Serializable, BlockCha
     }
 
     /**
+     * Returns transactions from a specific pool
+     */
+    @Override
+    public Map<Sha256Hash, Transaction> getTransactionPool(Pool pool) {
+        lock.lock();
+        try {
+            switch (pool) {
+                case UNSPENT:
+                    return unspent;
+                case SPENT:
+                    return spent;
+                case PENDING:
+                    return pending;
+                case DEAD:
+                    return dead;
+                default:
+                    throw new RuntimeException("Unknown wallet transaction type " + pool);
+            }
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /**
      * Deletes transactions which appeared above the given block height from the wallet, but does not touch the keys.
      * This is useful if you have some keys and wish to replay the block chain into the wallet in order to pick them up.
      * Triggers auto saving.
@@ -3487,7 +3515,7 @@ public class Wallet extends BaseTaggableObject implements Serializable, BlockCha
                     // We assume if its already signed, its hopefully got a SIGHASH type that will not invalidate when
                     // we sign missing pieces (to check this would require either assuming any signatures are signing
                     // standard output types or a way to get processed signatures out of script execution)
-                    txIn.getScriptSig().correctlySpends(tx, i, txIn.getConnectedOutput().getScriptPubKey(), true);
+                    txIn.getScriptSig().correctlySpends(tx, i, txIn.getConnectedOutput().getScriptPubKey());
                     log.warn("Input {} already correctly spends output, assuming SIGHASH type used will be safe and skipping signing.", i);
                     continue;
                 } catch (ScriptException e) {
@@ -3885,6 +3913,29 @@ public class Wallet extends BaseTaggableObject implements Serializable, BlockCha
         boolean isScriptTypeSupported = out.getScriptPubKey().isSentToRawPubKey() || out.getScriptPubKey().isPayToScriptHash();
         return (out.isMine(this) && isScriptTypeSupported) ||
                 out.isWatched(this);
+    }
+
+    /**
+     * Used by {@link Peer} to decide whether or not to discard this block and any blocks building upon it, in case
+     * the Bloom filter used to request them may be exhausted, that is, not have sufficient keys in the deterministic
+     * sequence within it to reliably find relevant transactions.
+     */
+    public boolean checkForFilterExhaustion(FilteredBlock block) {
+        lock.lock();
+        try {
+            int epoch = keychain.getCombinedKeyLookaheadEpochs();
+            for (Transaction tx : block.getAssociatedTransactions().values()) {
+                markKeysAsUsed(tx);
+            }
+            int newEpoch = keychain.getCombinedKeyLookaheadEpochs();
+            checkState(newEpoch >= epoch);
+            // If the key lookahead epoch has advanced, there was a call to addKeys and the PeerGroup already has a
+            // pending request to recalculate the filter queued up on another thread. The calling Peer should abandon
+            // block at this point and await a new filter before restarting the download.
+            return newEpoch > epoch;
+        } finally {
+            lock.unlock();
+        }
     }
 
     //endregion

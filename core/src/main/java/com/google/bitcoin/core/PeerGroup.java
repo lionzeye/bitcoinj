@@ -143,31 +143,49 @@ public class PeerGroup extends AbstractExecutionThreadService implements Transac
             final double rate = checkNotNull(chain).getFalsePositiveRate();
             final double target = bloomFilterMerger.getBloomFilterFPRate() * MAX_FP_RATE_INCREASE;
             if (rate > target) {
-                log.info("Force update Bloom filter due to high false positive rate ({} vs {})", rate, target);
+                // TODO: Avoid hitting this path if the remote peer didn't acknowledge applying a new filter yet.
+                if (log.isDebugEnabled())
+                    log.debug("Force update Bloom filter due to high false positive rate ({} vs {})", rate, target);
                 recalculateFastCatchupAndFilter(FilterRecalculateMode.FORCE_SEND_FOR_REFRESH);
             }
         }
     };
 
     private int minBroadcastConnections = 0;
-    private Runnable bloomSendIfChanged = new Runnable() {
-        @Override public void run() {
-            recalculateFastCatchupAndFilter(FilterRecalculateMode.SEND_IF_CHANGED);
-        }
-    };
-    private Runnable bloomDontSend = new Runnable() {
-        @Override public void run() {
-            recalculateFastCatchupAndFilter(FilterRecalculateMode.DONT_SEND);
-        }
-    };
-    private AbstractWalletEventListener walletEventListener = new AbstractWalletEventListener() {
-        private void queueRecalc(boolean andTransmit) {
+    private final AbstractWalletEventListener walletEventListener = new AbstractWalletEventListener() {
+        // Because calculation of the new filter takes place asynchronously, these flags deduplicate requests.
+        @GuardedBy("this") private boolean sendIfChangedQueued, dontSendQueued;
+
+        private Runnable bloomSendIfChanged = new Runnable() {
+            @Override public void run() {
+                recalculateFastCatchupAndFilter(FilterRecalculateMode.SEND_IF_CHANGED);
+                synchronized (walletEventListener) {
+                    sendIfChangedQueued = false;
+                }
+            }
+        };
+        private Runnable bloomDontSend = new Runnable() {
+            @Override public void run() {
+                recalculateFastCatchupAndFilter(FilterRecalculateMode.DONT_SEND);
+                synchronized (walletEventListener) {
+                    dontSendQueued = false;
+                }
+            }
+        };
+
+        private synchronized void queueRecalc(boolean andTransmit) {
             if (andTransmit) {
-                log.info("Queuing recalc of the Bloom filter due to new keys or scripts becoming available");
-                Uninterruptibles.putUninterruptibly(jobQueue, bloomSendIfChanged);
+                if (!sendIfChangedQueued) {
+                    log.info("Queuing recalc of the Bloom filter due to new keys or scripts becoming available");
+                    sendIfChangedQueued = true;
+                    Uninterruptibles.putUninterruptibly(jobQueue, bloomSendIfChanged);
+                }
             } else {
-                log.info("Queuing recalc of the Bloom filter due to observing a pay to pubkey output on a relevant tx");
-                Uninterruptibles.putUninterruptibly(jobQueue, bloomDontSend);
+                if (!dontSendQueued) {
+                    log.info("Queuing recalc of the Bloom filter due to observing a pay to pubkey output on a relevant tx");
+                    dontSendQueued = true;
+                    Uninterruptibles.putUninterruptibly(jobQueue, bloomDontSend);
+                }
             }
         }
 
@@ -904,7 +922,6 @@ public class PeerGroup extends AbstractExecutionThreadService implements Transac
             // Fully verifying mode doesn't use this optimization (it can't as it needs to see all transactions).
             if (chain != null && chain.shouldVerifyTransactions())
                 return;
-            log.info("Recalculating filter in mode {}", mode);
             FilterMerger.Result result = bloomFilterMerger.calculate(ImmutableList.copyOf(peerFilterProviders));
             boolean send;
             switch (mode) {

@@ -20,6 +20,7 @@ package com.google.bitcoin.core;
 import com.google.bitcoin.core.TransactionConfidence.ConfidenceType;
 import com.google.bitcoin.params.UnitTestParams;
 import com.google.bitcoin.store.MemoryBlockStore;
+import com.google.bitcoin.testing.FakeTxBuilder;
 import com.google.bitcoin.testing.InboundMessageQueuer;
 import com.google.bitcoin.testing.TestWithPeerGroup;
 import com.google.bitcoin.wallet.KeyChainGroup;
@@ -50,7 +51,6 @@ public class FilteredBlockAndPartialMerkleTreeTests extends TestWithPeerGroup {
     }
 
     @Test
-    // Simple deserialization sanity check
     public void deserializeFilteredBlock() throws Exception {
         NetworkParameters params = UnitTestParams.get();
 
@@ -65,8 +65,29 @@ public class FilteredBlockAndPartialMerkleTreeTests extends TestWithPeerGroup {
         List<Sha256Hash> txesMatched = block.getTransactionHashes();
         assertTrue(txesMatched.size() == 1);
         assertTrue(txesMatched.contains(new Sha256Hash("63194f18be0af63f2c6bc9dc0f777cbefed3d9415c4af83f3ee3a3d669c00cb5")));
+
+        // Check round tripping.
+        assertEquals(block, new FilteredBlock(params, block.bitcoinSerialize()));
     }
-    
+
+    @Test
+    public void createFilteredBlock() throws Exception {
+        ECKey key1 = new ECKey();
+        ECKey key2 = new ECKey();
+        Transaction tx1 = FakeTxBuilder.createFakeTx(params, Coin.COIN,  key1);
+        Transaction tx2 = FakeTxBuilder.createFakeTx(params, Coin.FIFTY_COINS, key2.toAddress(params));
+        Block block = FakeTxBuilder.makeSolvedTestBlock(params.getGenesisBlock(), new Address(params, "msg2t2V2sWNd85LccoddtWysBTR8oPnkzW"), tx1, tx2);
+        BloomFilter filter = new BloomFilter(4, 0.1, 1);
+        filter.insert(key1);
+        filter.insert(key2);
+        FilteredBlock filteredBlock = filter.applyAndUpdate(block);
+        assertEquals(4, filteredBlock.getTransactionCount());
+        // This call triggers verification of the just created data.
+        List<Sha256Hash> txns = filteredBlock.getTransactionHashes();
+        assertTrue(txns.contains(tx1.getHash()));
+        assertTrue(txns.contains(tx2.getHash()));
+    }
+
     @Test
     public void serializeDownloadBlockWithWallet() throws Exception {
         unitTestParams = UnitTestParams.get();

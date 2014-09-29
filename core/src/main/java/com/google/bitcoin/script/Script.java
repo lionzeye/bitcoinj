@@ -20,7 +20,6 @@ package com.google.bitcoin.script;
 
 import com.google.bitcoin.core.*;
 import com.google.bitcoin.crypto.TransactionSignature;
-import com.google.common.base.Preconditions;
 import com.google.common.collect.Lists;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -37,11 +36,7 @@ import java.security.NoSuchAlgorithmException;
 import java.util.*;
 
 import static com.google.bitcoin.script.ScriptOpCodes.*;
-import static com.google.common.base.Preconditions.checkArgument;
-import static com.google.common.base.Preconditions.checkNotNull;
-import static com.google.common.base.Preconditions.checkState;
-
-// TODO: Make this class a superclass with derived classes giving accessor methods for the various common templates.
+import static com.google.common.base.Preconditions.*;
 
 /**
  * <p>Programs embedded inside transactions that control redemption of payments.</p>
@@ -55,6 +50,14 @@ import static com.google.common.base.Preconditions.checkState;
  * static methods for building scripts.</p>
  */
 public class Script {
+
+    /** Flags to pass to {@link Script#correctlySpends(Transaction, long, Script, Set)}. */
+    public enum VerifyFlag {
+        P2SH, // Enable BIP16-style subscript evaluation.
+        NULLDUMMY // Verify dummy stack item consumed by CHECKMULTISIG is of zero-length.
+    }
+    public static final EnumSet<VerifyFlag> ALL_VERIFY_FLAGS = EnumSet.allOf(VerifyFlag.class);
+
     private static final Logger log = LoggerFactory.getLogger(Script.class);
     public static final long MAX_SCRIPT_ELEMENT_SIZE = 520;  // bytes
     public static final int SIG_SIZE = 75;
@@ -134,7 +137,7 @@ public class Script {
         }
     }
 
-    /** Returns an immutable list of the scripts parsed form. */
+    /** Returns an immutable list of the scripts parsed form. Each chunk is either an opcode or data element. */
     public List<ScriptChunk> getChunks() {
         return Collections.unmodifiableList(chunks);
     }
@@ -721,7 +724,7 @@ public class Script {
     }
     
     private static void executeScript(Transaction txContainingThis, long index,
-                                      Script script, LinkedList<byte[]> stack) throws ScriptException {
+                                      Script script, LinkedList<byte[]> stack, boolean enforceNullDummy) throws ScriptException {
         int opCount = 0;
         int lastCodeSepLocation = 0;
         
@@ -1199,7 +1202,7 @@ public class Script {
                     break;
                 case OP_CHECKMULTISIG:
                 case OP_CHECKMULTISIGVERIFY:
-                    opCount = executeMultiSig(txContainingThis, (int) index, script, stack, opCount, lastCodeSepLocation, opcode);
+                    opCount = executeMultiSig(txContainingThis, (int) index, script, stack, opCount, lastCodeSepLocation, opcode, enforceNullDummy);
                     break;
                 case OP_NOP1:
                 case OP_NOP2:
@@ -1266,7 +1269,7 @@ public class Script {
     }
 
     private static int executeMultiSig(Transaction txContainingThis, int index, Script script, LinkedList<byte[]> stack,
-                                       int opCount, int lastCodeSepLocation, int opcode) throws ScriptException {
+                                       int opCount, int lastCodeSepLocation, int opcode, boolean enforceNullDummy) throws ScriptException {
         if (stack.size() < 2)
             throw new ScriptException("Attempted OP_CHECKMULTISIG(VERIFY) on a stack with size < 2");
         int pubKeyCount = castToBigInteger(stack.pollLast()).intValue();
@@ -1331,7 +1334,9 @@ public class Script {
         }
 
         // We uselessly remove a stack object to emulate a reference client bug.
-        stack.pollLast();
+        byte[] nullDummy = stack.pollLast();
+        if (enforceNullDummy && nullDummy.length > 0)
+            throw new ScriptException("OP_CHECKMULTISIG(VERIFY) with non-null nulldummy: " + Arrays.toString(nullDummy));
 
         if (opcode == OP_CHECKMULTISIG) {
             stack.add(valid ? new byte[] {1} : new byte[] {0});
@@ -1343,15 +1348,29 @@ public class Script {
     }
 
     /**
+     * Verifies that this script (interpreted as a scriptSig) correctly spends the given scriptPubKey, enabling all
+     * validation rules.
+     * @param txContainingThis The transaction in which this input scriptSig resides.
+     *                         Accessing txContainingThis from another thread while this method runs results in undefined behavior.
+     * @param scriptSigIndex The index in txContainingThis of the scriptSig (note: NOT the index of the scriptPubKey).
+     * @param scriptPubKey The connected scriptPubKey containing the conditions needed to claim the value.
+     */
+    public void correctlySpends(Transaction txContainingThis, long scriptSigIndex, Script scriptPubKey)
+            throws ScriptException {
+        correctlySpends(txContainingThis, scriptSigIndex, scriptPubKey, ALL_VERIFY_FLAGS);
+    }
+
+    /**
      * Verifies that this script (interpreted as a scriptSig) correctly spends the given scriptPubKey.
      * @param txContainingThis The transaction in which this input scriptSig resides.
      *                         Accessing txContainingThis from another thread while this method runs results in undefined behavior.
      * @param scriptSigIndex The index in txContainingThis of the scriptSig (note: NOT the index of the scriptPubKey).
      * @param scriptPubKey The connected scriptPubKey containing the conditions needed to claim the value.
-     * @param enforceP2SH Whether "pay to script hash" rules should be enforced. If in doubt, set to true.
+     * @param verifyFlags Each flag enables one validation rule. If in doubt, use {@link #correctlySpends(Transaction, long, Script)}
+     *                    which sets all flags.
      */
     public void correctlySpends(Transaction txContainingThis, long scriptSigIndex, Script scriptPubKey,
-                                boolean enforceP2SH) throws ScriptException {
+                                Set<VerifyFlag> verifyFlags) throws ScriptException {
         // Clone the transaction because executing the script involves editing it, and if we die, we'll leave
         // the tx half broken (also it's not so thread safe to work on it directly.
         try {
@@ -1365,10 +1384,10 @@ public class Script {
         LinkedList<byte[]> stack = new LinkedList<byte[]>();
         LinkedList<byte[]> p2shStack = null;
         
-        executeScript(txContainingThis, scriptSigIndex, this, stack);
-        if (enforceP2SH)
+        executeScript(txContainingThis, scriptSigIndex, this, stack, verifyFlags.contains(VerifyFlag.NULLDUMMY));
+        if (verifyFlags.contains(VerifyFlag.P2SH))
             p2shStack = new LinkedList<byte[]>(stack);
-        executeScript(txContainingThis, scriptSigIndex, scriptPubKey, stack);
+        executeScript(txContainingThis, scriptSigIndex, scriptPubKey, stack, verifyFlags.contains(VerifyFlag.NULLDUMMY));
         
         if (stack.size() == 0)
             throw new ScriptException("Stack empty at end of script execution.");
@@ -1389,7 +1408,7 @@ public class Script {
         //     overall scalability and performance.
 
         // TODO: Check if we can take out enforceP2SH if there's a checkpoint at the enforcement block.
-        if (enforceP2SH && scriptPubKey.isPayToScriptHash()) {
+        if (verifyFlags.contains(VerifyFlag.P2SH) && scriptPubKey.isPayToScriptHash()) {
             for (ScriptChunk chunk : chunks)
                 if (chunk.isOpCode() && chunk.opcode > OP_16)
                     throw new ScriptException("Attempted to spend a P2SH scriptPubKey with a script that contained script ops");
@@ -1397,7 +1416,7 @@ public class Script {
             byte[] scriptPubKeyBytes = p2shStack.pollLast();
             Script scriptPubKeyP2SH = new Script(scriptPubKeyBytes);
             
-            executeScript(txContainingThis, scriptSigIndex, scriptPubKeyP2SH, p2shStack);
+            executeScript(txContainingThis, scriptSigIndex, scriptPubKeyP2SH, p2shStack, verifyFlags.contains(VerifyFlag.NULLDUMMY));
             
             if (p2shStack.size() == 0)
                 throw new ScriptException("P2SH stack empty at end of script execution.");

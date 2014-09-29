@@ -270,9 +270,9 @@ public class TransactionOutput extends ChildMessage implements Serializable {
         availableForSpending = false;
         spentBy = input;
         if (parent != null)
-            log.info("Marked {}:{} as spent by {}", getParentTransaction().getHash(), getIndex(), input);
+            if (log.isDebugEnabled()) log.debug("Marked {}:{} as spent by {}", getParentTransaction().getHash(), getIndex(), input);
         else
-            log.info("Marked floating output as spent by {}", input);
+            if (log.isDebugEnabled()) log.debug("Marked floating output as spent by {}", input);
     }
 
     /**
@@ -280,9 +280,9 @@ public class TransactionOutput extends ChildMessage implements Serializable {
      */
     public void markAsUnspent() {
         if (parent != null)
-            log.info("Un-marked {}:{} as spent by {}", getParentTransaction().getHash(), getIndex(), spentBy);
+            if (log.isDebugEnabled()) log.debug("Un-marked {}:{} as spent by {}", getParentTransaction().getHash(), getIndex(), spentBy);
         else
-            log.info("Un-marked floating output as spent by {}", spentBy);
+            if (log.isDebugEnabled()) log.debug("Un-marked floating output as spent by {}", spentBy);
         availableForSpending = true;
         spentBy = null;
     }
@@ -310,17 +310,17 @@ public class TransactionOutput extends ChildMessage implements Serializable {
     /**
      * Returns true if this output is to a key in the wallet or to an address/script we are watching.
      */
-    public boolean isMineOrWatched(Wallet wallet) {
-        return isMine(wallet) || isWatched(wallet);
+    public boolean isMineOrWatched(TransactionBag transactionBag) {
+        return isMine(transactionBag) || isWatched(transactionBag);
     }
 
     /**
      * Returns true if this output is to a key, or an address we have the keys for, in the wallet.
      */
-    public boolean isWatched(Wallet wallet) {
+    public boolean isWatched(TransactionBag transactionBag) {
         try {
             Script script = getScriptPubKey();
-            return wallet.isWatchedScript(script);
+            return transactionBag.isWatchedScript(script);
         } catch (ScriptException e) {
             // Just means we didn't understand the output of this transaction: ignore it.
             log.debug("Could not parse tx output script: {}", e.toString());
@@ -331,17 +331,17 @@ public class TransactionOutput extends ChildMessage implements Serializable {
     /**
      * Returns true if this output is to a key, or an address we have the keys for, in the wallet.
      */
-    public boolean isMine(Wallet wallet) {
+    public boolean isMine(TransactionBag transactionBag) {
         try {
             Script script = getScriptPubKey();
             if (script.isSentToRawPubKey()) {
                 byte[] pubkey = script.getPubKey();
-                return wallet.isPubKeyMine(pubkey);
+                return transactionBag.isPubKeyMine(pubkey);
             } if (script.isPayToScriptHash()) {
-                return wallet.isPayToScriptHashMine(script.getPubKeyHash());
+                return transactionBag.isPayToScriptHashMine(script.getPubKeyHash());
             } else {
                 byte[] pubkeyHash = script.getPubKeyHash();
-                return wallet.isPubKeyHashMine(pubkeyHash);
+                return transactionBag.isPubKeyHashMine(pubkeyHash);
             }
         } catch (ScriptException e) {
             // Just means we didn't understand the output of this transaction: ignore it.
