@@ -20,12 +20,16 @@ package com.google.bitcoin.store;
 
 import com.google.bitcoin.core.*;
 import com.google.bitcoin.core.TransactionConfidence.ConfidenceType;
+import com.google.bitcoin.crypto.DeterministicKey;
 import com.google.bitcoin.params.MainNetParams;
 import com.google.bitcoin.params.UnitTestParams;
 import com.google.bitcoin.script.ScriptBuilder;
 import com.google.bitcoin.testing.FakeTxBuilder;
 import com.google.bitcoin.utils.BriefLogFormatter;
 import com.google.bitcoin.utils.Threading;
+import com.google.bitcoin.wallet.DeterministicKeyChain;
+import com.google.bitcoin.wallet.KeyChain;
+import com.google.common.collect.ImmutableList;
 import com.google.protobuf.ByteString;
 import org.bitcoinj.wallet.Protos;
 import org.junit.Before;
@@ -35,6 +39,7 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.math.BigInteger;
 import java.net.InetAddress;
+import java.security.SecureRandom;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.Iterator;
@@ -111,7 +116,7 @@ public class WalletProtobufSerializerTest {
         assertEquals(Protos.Key.Type.ORIGINAL, walletProto.getKey(0).getType());
         assertEquals(0, walletProto.getExtensionCount());
         assertEquals(1, walletProto.getTransactionCount());
-        assertEquals(1, walletProto.getKeyCount());
+        assertEquals(6, walletProto.getKeyCount());
         
         Protos.Transaction t1p = walletProto.getTransaction(0);
         assertEquals(0, t1p.getBlockHashCount());
@@ -226,9 +231,6 @@ public class WalletProtobufSerializerTest {
         assertEquals(2, confidence0.getDepthInBlocks());
         assertEquals(1, confidence1.getDepthInBlocks());
 
-        assertEquals(work1.add(work2), confidence0.getWorkDone());
-        assertEquals(work2, confidence1.getWorkDone());
-
         // Roundtrip the wallet and check it has stored the depth and workDone.
         Wallet rebornWallet = roundTrip(myWallet);
 
@@ -257,14 +259,10 @@ public class WalletProtobufSerializerTest {
 
         assertEquals(2, rebornConfidence0.getDepthInBlocks());
         assertEquals(1, rebornConfidence1.getDepthInBlocks());
-
-        assertEquals(work1.add(work2), rebornConfidence0.getWorkDone());
-        assertEquals(work2, rebornConfidence1.getWorkDone());
     }
 
     private static Wallet roundTrip(Wallet wallet) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
-        //System.out.println(WalletProtobufSerializer.walletToText(wallet));
         new WalletProtobufSerializer().writeWallet(wallet, output);
         ByteArrayInputStream test = new ByteArrayInputStream(output.toByteArray());
         assertTrue(WalletProtobufSerializer.isWallet(test));
@@ -283,6 +281,23 @@ public class WalletProtobufSerializerTest {
                 wallet1.findKeyFromPubHash(myKey.getPubKeyHash()).getPrivKeyBytes());
         assertEquals(myKey.getCreationTimeSeconds(),
                 wallet1.findKeyFromPubHash(myKey.getPubKeyHash()).getCreationTimeSeconds());
+    }
+
+    @Test
+    public void testRoundTripMarriedWallet() throws Exception {
+        // create 2-of-2 married wallet
+        myWallet = new Wallet(params);
+        final DeterministicKeyChain keyChain = new DeterministicKeyChain(new SecureRandom());
+        DeterministicKey partnerKey = DeterministicKey.deserializeB58(null, keyChain.getWatchingKey().serializePubB58());
+
+        myWallet.addFollowingAccountKeys(ImmutableList.of(partnerKey), 2);
+        myAddress = myWallet.currentAddress(KeyChain.KeyPurpose.RECEIVE_FUNDS);
+
+        Wallet wallet1 = roundTrip(myWallet);
+        assertEquals(0, wallet1.getTransactions(true).size());
+        assertEquals(Coin.ZERO, wallet1.getBalance());
+        assertEquals(2, wallet1.getSigsRequiredToSpend());
+        assertEquals(myAddress, wallet1.currentAddress(KeyChain.KeyPurpose.RECEIVE_FUNDS));
     }
 
     @Test

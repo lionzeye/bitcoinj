@@ -4,6 +4,7 @@ import com.google.bitcoin.core.NetworkParameters;
 import com.google.bitcoin.kits.WalletAppKit;
 import com.google.bitcoin.params.MainNetParams;
 import com.google.bitcoin.params.RegTestParams;
+import com.google.bitcoin.params.TestNet3Params;
 import com.google.bitcoin.utils.BriefLogFormatter;
 import com.google.bitcoin.utils.Threading;
 import com.google.bitcoin.wallet.DeterministicSeed;
@@ -29,7 +30,7 @@ import static wallettemplate.utils.GuiUtils.*;
 public class Main extends Application {
     public static String APP_NAME = "WalletTemplate";
 
-    public static NetworkParameters params = MainNetParams.get();
+    public static NetworkParameters params = TestNet3Params.get();
     public static WalletAppKit bitcoin;
     public static Main instance;
 
@@ -122,6 +123,8 @@ public class Main extends Application {
             // Checkpoint files are made using the BuildCheckpoints tool and usually we have to download the
             // last months worth or more (takes a few seconds).
             bitcoin.setCheckpoints(getClass().getResourceAsStream("checkpoints"));
+        } else if (params == TestNet3Params.get()) {
+            bitcoin.setCheckpoints(getClass().getResourceAsStream("checkpoints.testnet"));
             // As an example!
             bitcoin.useTor();
         }

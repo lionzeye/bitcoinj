@@ -1,5 +1,6 @@
 /**
  * Copyright 2011 Google Inc.
+ * Copyright 2014 Giannis Dzegoutanis
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,8 +17,7 @@
 
 package com.google.bitcoin.core;
 
-import com.google.bitcoin.params.MainNetParams;
-import com.google.bitcoin.params.TestNet3Params;
+import com.google.bitcoin.params.Networks;
 import com.google.bitcoin.script.Script;
 
 import javax.annotation.Nullable;
@@ -101,12 +101,9 @@ public class Address extends VersionedChecksummedBytes {
                 throw new WrongNetworkException(version, params.getAcceptableAddressCodes());
             }
             this.params = params;
-        }
-        else {
-            // TODO: There should be a more generic way to get all supported networks.
-            NetworkParameters[] networks = { TestNet3Params.get(), MainNetParams.get() };
+        } else {
             NetworkParameters paramsFound = null;
-            for (NetworkParameters p : networks) {
+            for (NetworkParameters p : Networks.get()) {
                 if (isAcceptableVersion(p, version)) {
                     paramsFound = p;
                     break;
@@ -139,9 +136,8 @@ public class Address extends VersionedChecksummedBytes {
      * compatible with the current wallet. You should be able to handle a null response from this method. Note that the
      * parameters returned is not necessarily the same as the one the Address was created with.
      *
-     * @return a NetworkParameters representing the network the address is intended for, or null if unknown.
+     * @return a NetworkParameters representing the network the address is intended for.
      */
-    @Nullable
     public NetworkParameters getParameters() {
         return params;
     }
@@ -150,9 +146,9 @@ public class Address extends VersionedChecksummedBytes {
      * Given an address, examines the version byte and attempts to find a matching NetworkParameters. If you aren't sure
      * which network the address is intended for (eg, it was provided by a user), you can use this to decide if it is
      * compatible with the current wallet.
-     * @return a NetworkParameters or null if the string wasn't of a known version.
+     * @return a NetworkParameters of the address
+     * @throws AddressFormatException if the string wasn't of a known version
      */
-    @Nullable
     public static NetworkParameters getParametersFromAddress(String address) throws AddressFormatException {
         try {
             return new Address(null, address).getParameters();

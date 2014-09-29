@@ -21,13 +21,13 @@ import com.google.bitcoin.core.ECKey;
 import com.google.bitcoin.core.Utils;
 import com.google.bitcoin.crypto.TransactionSignature;
 import com.google.common.collect.Lists;
-import com.google.common.primitives.UnsignedBytes;
 
 import javax.annotation.Nullable;
 import java.util.*;
 
 import static com.google.bitcoin.script.ScriptOpCodes.*;
 import static com.google.common.base.Preconditions.checkArgument;
+import static com.google.common.base.Preconditions.checkState;
 
 /**
  * <p>Tools for the construction of commonly used script types. You don't normally need this as it's hidden behind
@@ -185,7 +185,7 @@ public class ScriptBuilder {
         return createMultiSigInputScriptBytes(sigs, multisigProgram.getProgram());
     }
 
-    /** 
+    /**
      * Create a program that satisfies an OP_CHECKMULTISIG program, using pre-encoded signatures. 
      * Optionally, appends the script program bytes if spending a P2SH output.
      */
@@ -197,6 +197,60 @@ public class ScriptBuilder {
             builder.data(signature);
         if (multisigProgramBytes!= null)
         	builder.data(multisigProgramBytes);
+        return builder.build();
+    }
+
+    /**
+     * Returns a copy of the given scriptSig with the signature inserted in the given position.
+     *
+     * This function assumes that any missing sigs have OP_0 placeholders.
+     *
+     * @param targetIndex where to insert the signature
+     * @param sigsPrefixCount how many items to copy verbatim (e.g. initial OP_0 for multisig)
+     * @param sigsSuffixCount how many items to copy verbatim at end (e.g. redeemScript for P2SH)
+     */
+    public static Script updateScriptWithSignature(Script scriptSig, byte[] signature, int targetIndex,
+                                                   int sigsPrefixCount, int sigsSuffixCount) {
+        ScriptBuilder builder = new ScriptBuilder();
+        List<ScriptChunk> inputChunks = scriptSig.getChunks();
+        int totalChunks = inputChunks.size();
+
+        // copy the prefix
+        for (ScriptChunk chunk: inputChunks.subList(0, sigsPrefixCount))
+            builder.addChunk(chunk);
+
+        // copy the sigs
+        int pos = 0;
+        boolean inserted = false;
+        for (ScriptChunk chunk: inputChunks.subList(sigsPrefixCount, totalChunks - sigsSuffixCount)) {
+            if (pos == targetIndex) {
+                inserted = true;
+                builder.data(signature);
+                pos++;
+            }
+            if (!chunk.equalsOpCode(OP_0)) {
+                builder.addChunk(chunk);
+                pos++;
+            }
+        }
+
+        // add OP_0's if needed, since we skipped them in the previous loop
+        while (pos < totalChunks - sigsPrefixCount - sigsSuffixCount) {
+            if (pos == targetIndex) {
+                inserted = true;
+                builder.data(signature);
+            }
+            else {
+                builder.addChunk(new ScriptChunk(OP_0, null));
+            }
+            pos++;
+        }
+
+        // copy the suffix
+        for (ScriptChunk chunk: inputChunks.subList(totalChunks - sigsSuffixCount, totalChunks))
+            builder.addChunk(chunk);
+
+        checkState(inserted);
         return builder.build();
     }
 
@@ -233,14 +287,7 @@ public class ScriptBuilder {
      */
     public static Script createRedeemScript(int threshold, List<ECKey> pubkeys) {
         pubkeys = new ArrayList<ECKey>(pubkeys);
-        final Comparator comparator = UnsignedBytes.lexicographicalComparator();
-        Collections.sort(pubkeys, new Comparator<ECKey>() {
-            @Override
-            public int compare(ECKey k1, ECKey k2) {
-                return comparator.compare(k1.getPubKey(), k2.getPubKey());
-            }
-        });
-
+        Collections.sort(pubkeys, ECKey.PUBKEY_COMPARATOR);
         return ScriptBuilder.createMultiSigOutputScript(threshold, pubkeys);
     }
 }

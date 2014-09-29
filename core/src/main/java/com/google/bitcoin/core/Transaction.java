@@ -22,14 +22,12 @@ import com.google.bitcoin.crypto.TransactionSignature;
 import com.google.bitcoin.script.Script;
 import com.google.bitcoin.script.ScriptBuilder;
 import com.google.bitcoin.script.ScriptOpCodes;
-import com.google.bitcoin.wallet.DecryptingKeyBag;
-import com.google.bitcoin.wallet.KeyBag;
+import com.google.bitcoin.utils.ExchangeRate;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.primitives.Ints;
 import com.google.common.primitives.Longs;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.spongycastle.crypto.params.KeyParameter;
 
 import javax.annotation.Nullable;
 import java.io.*;
@@ -38,7 +36,7 @@ import java.text.SimpleDateFormat;
 import java.util.*;
 
 import static com.google.bitcoin.core.Utils.*;
-import static com.google.common.base.Preconditions.*;
+import static com.google.common.base.Preconditions.checkState;
 
 /**
  * <p>A transaction represents the movement of coins from some addresses to some other addresses. It can also represent
@@ -55,7 +53,10 @@ import static com.google.common.base.Preconditions.*;
  * are building a wallet, how to present confidence to your users is something to consider carefully.</p>
  */
 public class Transaction extends ChildMessage implements Serializable {
-    /** A comparator that can be used to sort transactions by their updateTime field. */
+    /**
+     * A comparator that can be used to sort transactions by their updateTime field. The ordering goes from most recent
+     * into the past.
+     */
     public static final Comparator<Transaction> SORT_TX_BY_UPDATE_TIME = new Comparator<Transaction>() {
         @Override
         public int compare(final Transaction tx1, final Transaction tx2) {
@@ -155,6 +156,19 @@ public class Transaction extends ChildMessage implements Serializable {
     }
 
     private Purpose purpose = Purpose.UNKNOWN;
+
+    /**
+     * This field can be used by applications to record the exchange rate that was valid when the transaction happened.
+     * It's optional.
+     */
+    @Nullable
+    private ExchangeRate exchangeRate;
+
+    /**
+     * This field can be used to record the memo of the payment request that initiated the transaction. It's optional.
+     */
+    @Nullable
+    private String memo;
 
     public Transaction(NetworkParameters params) {
         super(params);
@@ -320,12 +334,6 @@ public class Transaction extends ChildMessage implements Serializable {
 
         if (bestChain) {
             TransactionConfidence transactionConfidence = getConfidence();
-            // Reset the work done.
-            try {
-                transactionConfidence.setWorkDone(block.getHeader().getWork());
-            } catch (VerificationException e) {
-                throw new RuntimeException(e);  // Cannot happen.
-            }
             // This sets type to BUILDING and depth to one.
             transactionConfidence.setAppearedAtChainHeight(block.getHeight());
         }
@@ -746,6 +754,8 @@ public class Transaction extends ChildMessage implements Serializable {
      */
     public TransactionInput addSignedInput(TransactionOutPoint prevOut, Script scriptPubKey, ECKey sigKey,
                                            SigHash sigHash, boolean anyoneCanPay) throws ScriptException {
+        // Verify the API user didn't try to do operations out of order.
+        checkState(!outputs.isEmpty(), "Attempting to sign tx without outputs.");
         TransactionInput input = new TransactionInput(params, this, new byte[]{}, prevOut);
         addInput(input);
         Sha256Hash hash = hashForSignature(inputs.size() - 1, scriptPubKey, sigHash, anyoneCanPay);
@@ -832,125 +842,6 @@ public class Transaction extends ChildMessage implements Serializable {
         return addOutput(new TransactionOutput(params, this, value, script.getProgram()));
     }
 
-    /**
-     * Once a transaction has some inputs and outputs added, the signatures in the inputs can be calculated. The
-     * signature is over the transaction itself, to prove the redeemer actually created that transaction,
-     * so we have to do this step last.<p>
-     * <p/>
-     * This method is similar to SignatureHash in script.cpp
-     *
-     * @param hashType This should always be set to SigHash.ALL currently. Other types are unused.
-     * @param wallet   A wallet is required to fetch the keys needed for signing.
-     */
-    public synchronized void signInputs(SigHash hashType, Wallet wallet) throws ScriptException {
-        signInputs(hashType, wallet, null);
-    }
-
-    /**
-     * <p>Once a transaction has some inputs and outputs added, the signatures in the inputs can be calculated. The
-     * signature is over the transaction itself, to prove the redeemer actually created that transaction,
-     * so we have to do this step last.</p>
-     *
-     * @param hashType This should always be set to SigHash.ALL currently. Other types are unused.
-     * @param wallet  A wallet is required to fetch the keys needed for signing.
-     * @param aesKey The AES key to use to decrypt the key before signing. Null if no decryption is required.
-     */
-    public void signInputs(SigHash hashType, Wallet wallet, @Nullable KeyParameter aesKey) throws ScriptException {
-        if (aesKey == null) {
-            signInputs(hashType, false, wallet);
-        } else {
-            signInputs(hashType, false, new DecryptingKeyBag(wallet, aesKey));
-        }
-    }
-
-    /**
-     * Signs as many inputs as possible using keys from the given key bag, which are expected to be usable for
-     * signing, i.e. not encrypted and not missing the private key part.
-     *
-     * @param hashType This should always be set to SigHash.ALL currently. Other types are unused.
-     * @param keyBag a provider of keys that are usable as-is for signing.
-     */
-    public synchronized void signInputs(SigHash hashType, boolean anyoneCanPay, KeyBag keyBag) throws ScriptException {
-        checkState(inputs.size() > 0);
-        checkState(outputs.size() > 0);
-
-        // I don't currently have an easy way to test other modes work, as the official client does not use them.
-        checkArgument(hashType == SigHash.ALL, "Only SIGHASH_ALL is currently supported");
-
-        // The transaction is signed with the input scripts empty except for the input we are signing. In the case
-        // where addInput has been used to set up a new transaction, they are already all empty. The input being signed
-        // has to have the connected OUTPUT program in it when the hash is calculated!
-        //
-        // Note that each input may be claiming an output sent to a different key. So we have to look at the outputs
-        // to figure out which key to sign with.
-
-        TransactionSignature[] signatures = new TransactionSignature[inputs.size()];
-        ECKey[] signingKeys = new ECKey[inputs.size()];
-        for (int i = 0; i < inputs.size(); i++) {
-            TransactionInput input = inputs.get(i);
-            // We don't have the connected output, we assume it was signed already and move on
-            if (input.getOutpoint().getConnectedOutput() == null) {
-                log.warn("Missing connected output, assuming input {} is already signed.", i);
-                continue;
-            }
-            try {
-                // We assume if its already signed, its hopefully got a SIGHASH type that will not invalidate when
-                // we sign missing pieces (to check this would require either assuming any signatures are signing
-                // standard output types or a way to get processed signatures out of script execution)
-                input.getScriptSig().correctlySpends(this, i, input.getOutpoint().getConnectedOutput().getScriptPubKey(), true);
-                log.warn("Input {} already correctly spends output, assuming SIGHASH type used will be safe and skipping signing.", i);
-                continue;
-            } catch (ScriptException e) {
-                // Expected.
-            }
-            if (input.getScriptBytes().length != 0)
-                log.warn("Re-signing an already signed transaction! Be sure this is what you want.");
-            // Find the signing key we'll need to use.
-            ECKey key = input.getOutpoint().getConnectedKey(keyBag);
-            // This assert should never fire. If it does, it means the wallet is inconsistent.
-            checkNotNull(key, "Transaction exists in wallet that we cannot redeem: %s", input.getOutpoint().getHash());
-            // Keep the key around for the script creation step below.
-            signingKeys[i] = key;
-            // The anyoneCanPay feature isn't used at the moment.
-            byte[] connectedPubKeyScript = input.getOutpoint().getConnectedPubKeyScript();
-            try {
-                signatures[i] = calculateSignature(i, key, connectedPubKeyScript, hashType, anyoneCanPay);
-            } catch (ECKey.KeyIsEncryptedException e) {
-                throw e;
-            } catch (ECKey.MissingPrivateKeyException e) {
-                // Create a dummy signature to ensure the transaction is of the correct size when we try to ensure
-                // the right fee-per-kb is attached. If the wallet doesn't have the privkey, the user is assumed to
-                // be doing something special and that they will replace the dummy signature with a real one later.
-                signatures[i] = TransactionSignature.dummy();
-                log.info("Used dummy signature for input {} due to failure during signing (most likely missing privkey)", i);
-            }
-        }
-
-        // Now we have calculated each signature, go through and create the scripts. Reminder: the script consists:
-        // 1) For pay-to-address outputs: a signature (over a hash of the simplified transaction) and the complete
-        //    public key needed to sign for the connected output. The output script checks the provided pubkey hashes
-        //    to the address and then checks the signature.
-        // 2) For pay-to-key outputs: just a signature.
-        for (int i = 0; i < inputs.size(); i++) {
-            if (signatures[i] == null)
-                continue;
-            TransactionInput input = inputs.get(i);
-            final TransactionOutput connectedOutput = input.getOutpoint().getConnectedOutput();
-            checkNotNull(connectedOutput);  // Quiet static analysis: is never null here but cannot be statically proven
-            Script scriptPubKey = connectedOutput.getScriptPubKey();
-            if (scriptPubKey.isSentToAddress()) {
-                input.setScriptSig(ScriptBuilder.createInputScript(signatures[i], signingKeys[i]));
-            } else if (scriptPubKey.isSentToRawPubKey()) {
-                input.setScriptSig(ScriptBuilder.createInputScript(signatures[i]));
-            } else {
-                // Should be unreachable - if we don't recognize the type of script we're trying to sign for, we should
-                // have failed above when fetching the key to sign with.
-                throw new RuntimeException("Do not understand script type: " + scriptPubKey);
-            }
-        }
-
-        // Every input is now complete.
-    }
 
     /**
      * Calculates a signature that is valid for being inserted into the input at the given position. This is simply
@@ -1281,38 +1172,57 @@ public class Transaction extends ChildMessage implements Serializable {
     }
 
     /**
-     * Checks the transaction contents for sanity, in ways that can be done in a standalone manner.
+     * <p>Checks the transaction contents for sanity, in ways that can be done in a standalone manner.
      * Does <b>not</b> perform all checks on a transaction such as whether the inputs are already spent.
+     * Specifically this method verifies:</p>
+     *
+     * <ul>
+     *     <li>That there is at least one input and output.</li>
+     *     <li>That the serialized size is not larger than the max block size.</li>
+     *     <li>That no outputs have negative value.</li>
+     *     <li>That the outputs do not sum to larger than the max allowed quantity of coin in the system.</li>
+     *     <li>If the tx is a coinbase tx, the coinbase scriptSig size is within range. Otherwise that there are no
+     *     coinbase inputs in the tx.</li>
+     * </ul>
      *
      * @throws VerificationException
      */
     public void verify() throws VerificationException {
         maybeParse();
         if (inputs.size() == 0 || outputs.size() == 0)
-            throw new VerificationException("Transaction had no inputs or no outputs.");
+            throw new VerificationException.EmptyInputsOrOutputs();
         if (this.getMessageSize() > Block.MAX_BLOCK_SIZE)
-            throw new VerificationException("Transaction larger than MAX_BLOCK_SIZE");
+            throw new VerificationException.LargerThanMaxBlockSize();
 
         Coin valueOut = Coin.ZERO;
+        HashSet<TransactionOutPoint> outpoints = new HashSet<TransactionOutPoint>();
+        for (TransactionInput input : inputs) {
+            if (outpoints.contains(input.getOutpoint()))
+                throw new VerificationException.DuplicatedOutPoint();
+            outpoints.add(input.getOutpoint());
+        }
         try {
             for (TransactionOutput output : outputs) {
-                if (output.getValue().signum() < 0)
-                    throw new VerificationException("Transaction output negative");
+                if (output.getValue().signum() < 0)    // getValue() can throw IllegalStateException
+                    throw new VerificationException.NegativeValueOutput();
                 valueOut = valueOut.add(output.getValue());
+                // Duplicate the MAX_MONEY check from Coin.add() in case someone accidentally removes it.
+                if (valueOut.compareTo(NetworkParameters.MAX_MONEY) > 0)
+                    throw new IllegalArgumentException();
             }
         } catch (IllegalStateException e) {
-            throw new VerificationException("A transaction output value exceeds maximum possible");
+            throw new VerificationException.ExcessiveValue();
         } catch (IllegalArgumentException e) {
-            throw new VerificationException("Total transaction output value greater than possible");
+            throw new VerificationException.ExcessiveValue();
         }
 
         if (isCoinBase()) {
             if (inputs.get(0).getScriptBytes().length < 2 || inputs.get(0).getScriptBytes().length > 100)
-                throw new VerificationException("Coinbase script size out of range");
+                throw new VerificationException.CoinbaseScriptSizeOutOfRange();
         } else {
             for (TransactionInput input : inputs)
                 if (input.isCoinBase())
-                    throw new VerificationException("Coinbase input as input in non-coinbase transaction");
+                    throw new VerificationException.UnexpectedCoinbaseInput();
         }
     }
 
@@ -1355,7 +1265,7 @@ public class Transaction extends ChildMessage implements Serializable {
      */
     public static long parseLockTimeStr(String lockTimeStr) throws ParseException {
         if (lockTimeStr.indexOf("/") != -1) {
-            SimpleDateFormat format = new SimpleDateFormat("yyyy/MM/dd");
+            SimpleDateFormat format = new SimpleDateFormat("yyyy/MM/dd", Locale.US);
             Date date = format.parse(lockTimeStr);
             return date.getTime() / 1000;
         }
@@ -1387,5 +1297,35 @@ public class Transaction extends ChildMessage implements Serializable {
      */
     public void setPurpose(Purpose purpose) {
         this.purpose = purpose;
+    }
+
+    /**
+     * Getter for {@link #exchangeRate}.
+     */
+    @Nullable
+    public ExchangeRate getExchangeRate() {
+        return exchangeRate;
+    }
+
+    /**
+     * Setter for {@link #exchangeRate}.
+     */
+    public void setExchangeRate(ExchangeRate exchangeRate) {
+        this.exchangeRate = exchangeRate;
+    }
+
+    /**
+     * Returns the transaction {@link #memo}.
+     */
+    public String getMemo() {
+        return memo;
+    }
+
+    /**
+     * Set the transaction {@link #memo}. It can be used to record the memo of the payment request that initiated the
+     * transaction.
+     */
+    public void setMemo(String memo) {
+        this.memo = memo;
     }
 }

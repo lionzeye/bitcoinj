@@ -77,7 +77,7 @@ public class VersionMessage extends Message {
     /** The version of this library release, as a string. */
     public static final String BITCOINJ_VERSION = "0.12-SNAPSHOT";
     /** The value that is prepended to the subVer field of this application. */
-    public static final String LIBRARY_SUBVER = "/BitCoinJ:" + BITCOINJ_VERSION + "/";
+    public static final String LIBRARY_SUBVER = "/bitcoinj:" + BITCOINJ_VERSION + "/";
 
     public VersionMessage(NetworkParameters params, byte[] payload) throws ProtocolException {
         super(params, payload, 0);
@@ -312,7 +312,7 @@ public class VersionMessage extends Message {
 
     /** Returns true if the protocol version and service bits both indicate support for the getutxos message. */
     public boolean isGetUTXOsSupported() {
-        return clientVersion >= GetUTXOSMessage.MIN_PROTOCOL_VERSION &&
+        return clientVersion >= GetUTXOsMessage.MIN_PROTOCOL_VERSION &&
                 (localServices & NODE_GETUTXOS) == NODE_GETUTXOS;
     }
 }
